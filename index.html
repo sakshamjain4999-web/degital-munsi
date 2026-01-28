@@ -1,0 +1,615 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInWithCustomToken, 
+  signInAnonymously, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  doc, 
+  setDoc, 
+  getDoc,
+  onSnapshot,
+  serverTimestamp,
+  GeoPoint,
+  collection,
+  addDoc
+} from 'firebase/firestore';
+import { 
+  LayoutDashboard, 
+  ShieldCheck, 
+  MapPin, 
+  Camera, 
+  CheckCircle2, 
+  ArrowLeft, 
+  ArrowRight, 
+  ChevronRight, 
+  Loader2, 
+  AlertCircle,
+  Plus,
+  ReceiptText,
+  ShoppingCart,
+  Bell,
+  Clock,
+  User as UserIcon,
+  Phone,
+  QrCode,
+  Download,
+  Smartphone,
+  X,
+  Timer,
+  Banknote,
+  Coins,
+  Lock,
+  Crown,
+  FileSearch,
+  Globe,
+  History,
+  LogOut,
+  Settings,
+  Wallet // Wallet icon verify kiya gaya hai
+} from 'lucide-react';
+
+// --- Firebase Initialization (Rule 1 & 3 Compliance) ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// Utility: INR Currency Formatter
+const formatINR = (amount) => {
+  const value = typeof amount === 'number' ? amount : 0;
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    maximumFractionDigits: 0
+  }).format(value);
+};
+
+const App = () => {
+  const [step, setStep] = useState('login'); // login, otp, setup, verification, success, dashboard
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null); 
+  const [merchantData, setMerchantData] = useState(null);
+  const [dailyLog, setDailyLog] = useState(null);
+  const [deviceId, setDeviceId] = useState('');
+
+  const PRIMARY_NAVY = "#1A237E";
+
+  // Form states
+  const [phone, setPhone] = useState('');
+  const [otp, setOtp] = useState('');
+  const [shopName, setShopName] = useState('');
+  const [category, setCategory] = useState('');
+  
+  // OCR states
+  const [isScanning, setIsScanning] = useState(false);
+  const [extractedData, setExtractedData] = useState(null);
+
+  // --- Device Fingerprinting (Web Identity) ---
+  useEffect(() => {
+    const generateId = () => {
+      const id = `WEB-${navigator.platform.substring(0,3)}-${Math.random().toString(36).substring(7)}`.toUpperCase();
+      setDeviceId(id);
+    };
+    generateId();
+  }, []);
+
+  // Auth & Auto-Login Check (Rule 3)
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (err) { 
+        console.error("Auth Error", err); 
+        setError("Login system error. Please refresh.");
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, async (currUser) => {
+      if (currUser) {
+        setUser(currUser);
+        try {
+          const merchRef = doc(db, 'artifacts', appId, 'public', 'data', 'merchants', currUser.uid);
+          const merchSnap = await getDoc(merchRef);
+          if (merchSnap.exists()) {
+            setMerchantData(merchSnap.data());
+            setStep('dashboard');
+          }
+        } catch (err) { console.error("Fetch Error", err); }
+      }
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Dashboard Data Sync
+  useEffect(() => {
+    if (step === 'dashboard' && user) {
+      const todayStr = new Date().toISOString().split('T')[0].replace(/-/g, '');
+      const logId = `${user.uid}_${todayStr}`;
+      
+      const unsubMerch = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'merchants', user.uid), (s) => {
+        if (s.exists()) setMerchantData(s.data());
+      }, (err) => console.error("Merchant Stream Error", err));
+
+      const unsubLog = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'dailyLogs', logId), (s) => {
+        if (s.exists()) setDailyLog(s.data());
+      }, (err) => console.error("Log Stream Error", err));
+
+      return () => { unsubMerch(); unsubLog(); };
+    }
+  }, [step, user]);
+
+  // --- Handlers ---
+  const handleNext = () => {
+    setError(null);
+    if (step === 'login') {
+      if (phone.length < 10) return setError("Bhai, mobile number 10 digit ka hona chahiye.");
+      setStep('otp');
+    } else if (step === 'otp') {
+      setStep('setup');
+    } else if (step === 'setup') {
+      if (!shopName || !category) return setError("Saari dukan ki details bharna zaroori hai.");
+      setStep('verification');
+    }
+  };
+
+  const handleBack = () => {
+    if (step === 'otp') setStep('login');
+    else if (step === 'setup') setStep('otp');
+    else if (step === 'verification') setStep('setup');
+  };
+
+  const processOCR = () => {
+    setIsScanning(true);
+    setTimeout(() => {
+      setExtractedData({
+        name: "RAHUL SHARMA",
+        panNumber: "ABCPS" + Math.floor(1000 + Math.random() * 9000) + "Z",
+        type: "PAN CARD"
+      });
+      setIsScanning(false);
+    }, 2000);
+  };
+
+  const handleFinalSubmit = async () => {
+    setSubmitting(true);
+    setError(null);
+    try {
+      const merchantRef = doc(db, 'artifacts', appId, 'public', 'data', 'merchants', user.uid);
+      await setDoc(merchantRef, {
+        businessName: shopName,
+        category,
+        ownerName: extractedData.name,
+        panNumber: extractedData.panNumber,
+        location: new GeoPoint(28.6139, 77.2090),
+        trustScore: 85,
+        isVerified: true,
+        deviceId,
+        createdAt: serverTimestamp()
+      });
+      setStep('success');
+    } catch (err) { 
+      setError(err.message || "Database write failed."); 
+    } finally { setSubmitting(false); }
+  };
+
+  if (loading && step === 'login') return (
+    <div className="h-screen flex flex-col items-center justify-center bg-slate-50 gap-4">
+      <Loader2 className="animate-spin text-[#1A237E]" size={40} />
+      <p className="font-bold text-slate-400 italic tracking-tighter uppercase">Merchant Portal load ho raha hai...</p>
+    </div>
+  );
+
+  if (step === 'dashboard') {
+    return <MerchantDashboard merchant={merchantData} log={dailyLog} primary={PRIMARY_NAVY} deviceId={deviceId} />;
+  }
+
+  return (
+    <div className="min-h-screen bg-[#F1F5F9] flex flex-col items-center justify-center p-4 font-sans">
+      <div className="w-full max-w-md bg-white rounded-[40px] shadow-2xl overflow-hidden min-h-[580px] flex flex-col border border-slate-100 animate-in fade-in duration-500">
+        
+        {/* Navy Header with Back and Step Progress */}
+        <div style={{ backgroundColor: PRIMARY_NAVY }} className="p-8 text-white relative">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full -mr-16 -mt-16 blur-3xl"></div>
+          <div className="flex justify-between items-center relative z-10">
+            <div className="flex items-center gap-3">
+              {['otp', 'setup', 'verification'].includes(step) && (
+                <button onClick={handleBack} className="p-2 bg-white/10 rounded-xl hover:bg-white/20 transition-all active:scale-90">
+                  <ArrowLeft size={18} />
+                </button>
+              )}
+              <div>
+                <h1 className="text-xl font-black italic tracking-tighter leading-none mb-1 text-white">Business OS</h1>
+                <p className="text-[10px] text-indigo-200 uppercase font-black tracking-widest opacity-80 italic">Merchant Setup</p>
+              </div>
+            </div>
+            <div className="bg-white/10 px-3 py-1 rounded-full text-[10px] font-bold border border-white/10">
+              STEP {step === 'login' || step === 'otp' ? '1/3' : step === 'setup' ? '2/3' : '3/3'}
+            </div>
+          </div>
+        </div>
+
+        <div className="p-8 flex-1 flex flex-col">
+          {error && (
+            <div className="mb-6 bg-red-50 text-red-600 p-4 rounded-2xl text-xs font-bold flex items-center gap-2 border border-red-100 animate-in slide-in-from-top-2">
+              <AlertCircle size={14}/> {String(error)}
+            </div>
+          )}
+
+          {step === 'login' && (
+            <div className="space-y-6 animate-in slide-in-from-bottom-4">
+              <h2 className="text-2xl font-black text-slate-800 tracking-tight leading-none mb-1">Dukan-dar Login</h2>
+              <p className="text-slate-400 text-sm font-medium leading-relaxed italic">Apna register mobile number darj karke onboarding shuru karein.</p>
+              <div className="relative">
+                <div className="absolute left-6 top-1/2 -translate-y-1/2 flex items-center gap-2 text-slate-400 border-r border-slate-200 pr-3 pointer-events-none">
+                  <Phone size={18} /> <span className="font-bold">+91</span>
+                </div>
+                <input 
+                  type="tel" maxLength={10} value={phone} 
+                  onChange={(e) => setPhone(e.target.value.replace(/\D/g, ''))} 
+                  className="w-full bg-slate-50 border-2 border-slate-100 py-5 pl-24 pr-6 rounded-2xl font-bold text-lg focus:border-[#1A237E] focus:bg-white outline-none transition-all shadow-inner" 
+                  placeholder="00000 00000"
+                />
+              </div>
+              <button onClick={handleNext} style={{ backgroundColor: PRIMARY_NAVY }} className="w-full text-white py-5 rounded-[24px] font-black shadow-xl flex items-center justify-center gap-2 active:scale-95 transition-all text-lg uppercase tracking-tight italic">SEND OTP <ArrowRight size={20}/></button>
+            </div>
+          )}
+
+          {step === 'otp' && (
+            <div className="space-y-6 animate-in slide-in-from-bottom-4">
+              <h2 className="text-3xl font-black text-slate-800 italic tracking-tight leading-none">Security Code</h2>
+              <input type="text" maxLength={6} value={otp} onChange={(e) => setOtp(e.target.value)} className="w-full bg-slate-50 border-2 border-slate-100 py-6 text-center text-4xl font-black tracking-[0.3em] rounded-3xl mb-4 shadow-inner outline-none focus:border-[#1A237E]" placeholder="000000"/>
+              <button onClick={handleNext} style={{ backgroundColor: PRIMARY_NAVY }} className="w-full text-white py-5 rounded-[24px] font-black text-lg active:scale-95 shadow-xl uppercase tracking-tight italic">CONTINUE</button>
+            </div>
+          )}
+
+          {step === 'setup' && (
+            <div className="space-y-4 animate-in slide-in-from-bottom-4">
+              <h2 className="text-3xl font-black text-slate-800 italic tracking-tight mb-2 leading-none">Shop Details</h2>
+              <div className="space-y-4 leading-none">
+                <input type="text" placeholder="Dukan ka Naam" value={shopName} onChange={(e) => setShopName(e.target.value)} className="w-full bg-slate-50 border-2 border-slate-100 py-4 px-6 rounded-xl font-bold outline-none focus:border-[#1A237E] transition-all"/>
+                <select value={category} onChange={(e) => setCategory(e.target.value)} className="w-full bg-slate-50 border-2 border-slate-100 py-4 px-6 rounded-xl font-bold outline-none appearance-none">
+                  <option value="">Category Choose Karein</option>
+                  <option value="Grocery">Kirana Store</option>
+                  <option value="Dairy">Dairy & Milk</option>
+                  <option value="Food">Food & Snacks</option>
+                </select>
+                <div className="p-5 bg-emerald-50 rounded-[24px] flex justify-between items-center text-emerald-800 border border-emerald-100 shadow-sm leading-none">
+                  <div className="flex items-center gap-3 leading-none"><MapPin size={22} className="text-emerald-500"/> <span className="font-black text-sm uppercase tracking-tighter leading-none text-emerald-800">Location Verified<br/><span className="text-[10px] opacity-60">Fixed: Sector 62, Noida</span></span></div>
+                  <CheckCircle2 size={24} className="text-emerald-500" />
+                </div>
+              </div>
+              <button onClick={handleNext} style={{ backgroundColor: PRIMARY_NAVY }} className="w-full text-white py-5 rounded-[24px] font-black active:scale-95 mt-4 text-lg shadow-lg uppercase tracking-tight italic leading-none">SAVE & NEXT</button>
+            </div>
+          )}
+
+          {step === 'verification' && (
+            <div className="text-center py-6 flex-1 flex flex-col justify-center animate-in zoom-in-95">
+              <h2 className="text-3xl font-black text-slate-800 mb-2 italic tracking-tighter leading-none">AI Identity</h2>
+              <p className="text-slate-400 text-sm mb-12 font-medium leading-relaxed italic">PAN Card scan karke identity verify karein.</p>
+              
+              {!extractedData ? (
+                <div onClick={processOCR} className="group border-2 border-dashed rounded-[40px] p-12 bg-slate-50 cursor-pointer hover:border-[#1A237E] transition-all active:scale-95 shadow-inner relative overflow-hidden">
+                  {isScanning ? (
+                    <div className="flex flex-col items-center gap-4">
+                      <Loader2 className="animate-spin text-[#1A237E]" size={48} />
+                      <p className="text-xs font-black text-slate-500 uppercase italic tracking-widest leading-none">AI Extracting...</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="bg-white p-6 rounded-full shadow-lg text-[#1A237E] mb-6 inline-block group-hover:scale-110 transition-transform border border-slate-100"><Camera size={48} /></div>
+                      <p className="font-black text-slate-800 text-xl tracking-tighter italic uppercase leading-none">Upload PAN Card</p>
+                      <p className="text-[10px] text-slate-400 font-bold uppercase mt-2 italic leading-none">Automated OCR Check</p>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-6 animate-in zoom-in duration-500">
+                  <div className="bg-emerald-50 border-2 border-emerald-100 p-8 rounded-[40px] text-left relative overflow-hidden shadow-sm leading-none">
+                    <CheckCircle2 size={120} className="absolute -right-8 -bottom-8 text-emerald-100/50" />
+                    <p className="text-[10px] font-black text-emerald-600 uppercase mb-4 tracking-widest opacity-70">Verified Identity</p>
+                    <div className="space-y-4 relative z-10 leading-none">
+                      <div><p className="text-[9px] font-black text-emerald-800/40 uppercase tracking-widest mb-1">Owner Name</p><p className="text-2xl font-black text-emerald-900 italic tracking-tight leading-none">{extractedData.name}</p></div>
+                      <div><p className="text-[9px] font-black text-emerald-800/40 uppercase tracking-widest mb-1">PAN Number</p><p className="text-xl font-black text-emerald-900 tracking-widest leading-none uppercase">{extractedData.panNumber}</p></div>
+                    </div>
+                  </div>
+                  <button onClick={handleFinalSubmit} style={{ backgroundColor: PRIMARY_NAVY }} className="w-full text-white py-5 rounded-[28px] font-black text-xl shadow-xl active:scale-95 flex items-center justify-center gap-3 uppercase tracking-tighter italic leading-none">{submitting ? <Loader2 className="animate-spin" /> : "FINISH REGISTRATION"}</button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {step === 'success' && (
+            <div className="flex flex-col items-center justify-center text-center py-10 flex-1 animate-in zoom-in duration-700">
+              <div className="w-28 h-28 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mb-8 shadow-2xl scale-110 animate-bounce"><CheckCircle2 size={56} /></div>
+              <h2 className="text-4xl font-black text-slate-800 mb-4 italic tracking-tight leading-none uppercase">Portal Active!</h2>
+              <p className="text-slate-500 font-medium mb-12 px-6 italic leading-relaxed">Badhai ho! Aapka account portal par verify ho gaya hai.</p>
+              <button onClick={() => setStep('dashboard')} style={{ backgroundColor: PRIMARY_NAVY }} className="w-full text-white py-6 rounded-3xl font-black text-xl shadow-2xl active:scale-95 uppercase tracking-tighter leading-none">OPEN DASHBOARD</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- MODERN WEB-PORTAL DASHBOARD (FIXED SQUEEZE, DOM NESTING & WALLET ICON) ---
+const MerchantDashboard = ({ merchant, log, primary, deviceId }) => {
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [showCashModal, setShowCashModal] = useState(false);
+  const [showSubWall, setShowSubWall] = useState(false);
+  const [amount, setAmount] = useState('');
+  const [transactions, setTransactions] = useState([]);
+  const [activeQr, setActiveQr] = useState(null);
+  const [timeLeft, setTimeLeft] = useState(120);
+
+  useEffect(() => {
+    let timer;
+    if (activeQr && timeLeft > 0) timer = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
+    else if (timeLeft === 0) setActiveQr(null);
+    return () => clearInterval(timer);
+  }, [activeQr, timeLeft]);
+
+  useEffect(() => {
+    if (!auth.currentUser) return;
+    const unsub = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'transactions'), (snap) => {
+      const data = snap.docs.map(d => ({id: d.id, ...d.data()}))
+        .filter(t => t.merchantId === auth.currentUser.uid)
+        .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+      setTransactions(data);
+    });
+    return () => unsub();
+  }, []);
+
+  const recordTransaction = async (txnAmount, type) => {
+    if (!txnAmount || isNaN(txnAmount)) return;
+    const value = Number(txnAmount);
+    const baseAmount = value / 1.18;
+    const totalGst = value - baseAmount;
+    
+    const txnId = `${type}-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
+    const payload = {
+      id: txnId, merchantId: auth.currentUser?.uid, amount: value,
+      cgst: totalGst / 2, sgst: totalGst / 2, type,
+      status: type === 'CASH' ? 'completed' : 'pending',
+      deviceId, createdAt: serverTimestamp()
+    };
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'transactions'), payload);
+      if (type === 'TOKEN') { setActiveQr(payload); setTimeLeft(120); setShowQrModal(true); }
+      else setShowCashModal(false);
+      setAmount('');
+    } catch (e) { console.error(e); }
+  };
+
+  const totals = useMemo(() => {
+    return transactions.reduce((acc, t) => {
+      acc.total += (t.amount || 0);
+      acc.cgst += (t.cgst || 0);
+      acc.sgst += (t.sgst || 0);
+      return acc;
+    }, { total: 0, cgst: 0, sgst: 0 });
+  }, [transactions]);
+
+  return (
+    <div className="min-h-screen bg-[#F8FAFC] flex flex-col md:flex-row font-sans overflow-hidden">
+      
+      {/* Sleek Desktop Sidebar */}
+      <aside className="hidden md:flex w-80 bg-white border-r border-slate-200 flex-col p-10 z-30 sticky top-0 h-screen shadow-sm">
+         <div className="flex items-center gap-4 mb-16 px-2">
+            <div style={{ backgroundColor: primary }} className="p-3 rounded-[20px] text-white shadow-xl shadow-indigo-100"><Globe size={28}/></div>
+            <div>
+               <h1 className="text-2xl font-black italic tracking-tighter text-slate-800 uppercase leading-none">Merchant</h1>
+               <p className="text-[10px] font-black text-indigo-500 uppercase tracking-widest mt-1 opacity-70">Accounting OS</p>
+            </div>
+         </div>
+         <nav className="space-y-4 flex-1 overflow-y-auto">
+            <SidebarItem icon={<LayoutDashboard size={20}/>} label="Accounting Dash" active />
+            <SidebarItem icon={<ReceiptText size={20}/>} label="Digital Munshi" />
+            <SidebarItem icon={<History size={20}/>} label="Ledger History" />
+            <SidebarItem icon={<Wallet size={20}/>} label="Daily Settlements" />
+            <SidebarItem icon={<Settings size={20}/>} label="Settings" />
+         </nav>
+         <div className="mt-12 bg-slate-50 p-8 rounded-[32px] border border-slate-100 shadow-inner group leading-none">
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-3 italic opacity-60">Security Hardware ID</p>
+            <div className="flex items-center gap-2 text-slate-800 font-bold text-[10px] break-all leading-tight"><Smartphone size={12}/> {deviceId}</div>
+         </div>
+      </aside>
+
+      {/* Main Responsive Area */}
+      <div className="flex-1 flex flex-col h-screen overflow-y-auto pb-32 md:pb-0 custom-scrollbar">
+         
+         {/* Responsive Header (Fixed Nesting Error: div instead of p for pulse dot) */}
+         <header className="bg-white border-b border-slate-100 px-8 md:px-12 py-8 flex justify-between items-center sticky top-0 z-20 backdrop-blur-md bg-white/90 shadow-sm leading-none">
+            <div>
+               <h2 className="text-2xl font-black text-slate-800 tracking-tighter italic uppercase leading-none">Accounting Dashboard</h2>
+               <div className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mt-2 flex items-center gap-2 leading-none">
+                 <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div> {merchant?.businessName}
+               </div>
+            </div>
+            <div className="flex items-center gap-6 leading-none">
+               <button onClick={() => setShowSubWall(true)} className="hidden sm:flex items-center gap-2 bg-amber-400 px-6 py-3 rounded-2xl font-black text-[#1A237E] text-[10px] shadow-lg hover:bg-amber-500 transition-all uppercase tracking-tighter italic leading-none"><Crown size={18}/> UPGRADE PRO</button>
+               <div className="bg-slate-50 p-3 rounded-2xl text-slate-400 border border-slate-200 cursor-pointer hover:bg-white hover:text-indigo-600 transition-all shadow-sm leading-none"><Bell size={22}/></div>
+            </div>
+         </header>
+
+         <main className="p-6 md:p-12 space-y-10 max-w-7xl mx-auto w-full">
+            
+            {/* Top Stat Bento Grid (No Squeeze) */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 leading-none">
+               
+               {/* Today's Kamai Widget */}
+               <div style={{ backgroundColor: primary }} className="lg:col-span-1 p-10 rounded-[48px] text-white shadow-2xl relative overflow-hidden flex flex-col justify-between min-h-[260px] group transition-all hover:shadow-indigo-900/20 leading-none">
+                  <div className="absolute top-0 right-0 p-4 opacity-5 group-hover:rotate-12 transition-transform duration-700 leading-none"><Clock size={160}/></div>
+                  <div className="relative z-10 leading-none">
+                     <p className="text-indigo-200 text-xs font-black uppercase tracking-widest mb-2 italic opacity-70">Aaj ki Total Sale</p>
+                     <h3 className="text-6xl font-black italic tracking-tighter leading-none">{formatINR(totals.total)}</h3>
+                  </div>
+                  <div className="flex gap-4 pt-10 relative z-10 leading-none">
+                     <button onClick={() => setShowCashModal(true)} className="flex-1 bg-white/10 hover:bg-white/20 py-4 rounded-2xl font-black text-[10px] uppercase transition-all flex items-center justify-center gap-2 border border-white/5 shadow-inner leading-none"><Plus size={18}/> Cash Entry</button>
+                     <button onClick={() => setShowQrModal(true)} className="flex-1 bg-emerald-500 hover:bg-emerald-600 py-4 rounded-2xl font-black text-[10px] uppercase shadow-xl active:scale-95 transition-all flex items-center justify-center gap-2 leading-none"><QrCode size={18}/> New Bill</button>
+                  </div>
+               </div>
+
+               {/* GST Ledger Hub */}
+               <div className="bg-white p-10 rounded-[48px] shadow-xl border border-white lg:col-span-2 flex flex-col justify-between group hover:shadow-indigo-50 transition-all leading-none">
+                  <div className="flex justify-between items-center mb-10 leading-none">
+                     <h3 className="font-black text-slate-800 text-2xl italic uppercase tracking-tighter leading-none">GST Munshi Ledger</h3>
+                     <button onClick={() => setShowSubWall(true)} className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-6 py-3 rounded-full uppercase tracking-widest border border-indigo-100 flex items-center gap-2 hover:bg-indigo-100 transition-all shadow-sm leading-none"><Download size={16}/> REPORTS</button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-20 leading-none">
+                     <div className="space-y-3 leading-none">
+                        <p className="text-[13px] font-bold text-slate-400 uppercase tracking-widest leading-none italic opacity-80">Today's CGST (9%)</p>
+                        <p className="text-5xl font-black text-slate-900 italic tracking-tighter leading-none">{formatINR(totals.cgst)}</p>
+                     </div>
+                     <div className="space-y-3 border-l-2 border-slate-50 pl-20 leading-none">
+                        <p className="text-[13px] font-bold text-slate-400 uppercase tracking-widest leading-none italic opacity-80">Today's SGST (9%)</p>
+                        <p className="text-5xl font-black text-slate-900 italic tracking-tighter leading-none">{formatINR(totals.sgst)}</p>
+                     </div>
+                  </div>
+               </div>
+
+            </div>
+
+            {/* Sales Ledger Row (Wide) */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 leading-none">
+               
+               {/* Sales History List */}
+               <section className="bg-white rounded-[48px] p-10 shadow-xl border border-white flex flex-col min-h-[550px] overflow-hidden group hover:shadow-indigo-50 transition-all leading-none">
+                  <div className="flex justify-between items-center mb-10 leading-none">
+                     <h3 className="font-black text-slate-800 text-2xl italic uppercase tracking-tighter leading-none">Daily Sales Register</h3>
+                     <div className="flex items-center gap-2 bg-emerald-50 px-5 py-2 rounded-full border border-emerald-100 shadow-sm leading-none">
+                        <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
+                        <span className="text-[10px] font-black text-emerald-600 uppercase tracking-widest leading-none">Live Sync</span>
+                     </div>
+                  </div>
+                  <div className="space-y-6 overflow-y-auto flex-1 pr-3 custom-scrollbar leading-none">
+                     {transactions.length === 0 ? (
+                        <div className="h-full flex flex-col items-center justify-center opacity-30 italic leading-none">
+                           <ShoppingCart size={80} className="mb-8 text-slate-200" />
+                           <p className="font-black text-slate-400 uppercase tracking-[0.2em] text-sm leading-none">No transactions found</p>
+                        </div>
+                     ) : transactions.map(t => (
+                        <div key={t.id} className="flex justify-between items-center p-6 bg-slate-50/50 rounded-[32px] border border-slate-100 hover:border-indigo-200 transition-all group active:scale-[0.99] cursor-pointer leading-none">
+                           <div className="flex items-center gap-6 leading-none">
+                              <div className={`p-5 rounded-[24px] shadow-sm ${t.type === 'CASH' ? 'bg-indigo-50 text-[#1A237E]' : 'bg-emerald-50 text-emerald-600'}`}>
+                                 {t.type === 'CASH' ? <Banknote size={28}/> : <Coins size={28}/>}
+                              </div>
+                              <div className="leading-tight">
+                                 <p className="text-lg font-black text-slate-800 leading-none italic">{t.type === 'CASH' ? 'Cash Entry' : 'Cloud Scan'}</p>
+                                 <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-2 opacity-60 italic leading-none">{t.id}</p>
+                              </div>
+                           </div>
+                           <div className="text-right leading-none text-emerald-500">
+                              <p className={`text-2xl font-black ${t.type === 'CASH' ? 'text-slate-900' : 'text-emerald-600'} leading-none tracking-tighter`}>{formatINR(t.amount)}</p>
+                              <div className="flex items-center gap-1 justify-end mt-2 leading-none"><CheckCircle2 size={12}/><p className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter leading-none">Verified</p></div>
+                           </div>
+                        </div>
+                     ))}
+                  </div>
+               </section>
+
+               {/* Right Widgets Hub */}
+               <div className="space-y-10 flex flex-col leading-none">
+                  
+                  <section className="bg-[#1A237E] rounded-[48px] p-10 shadow-2xl text-white relative overflow-hidden group cursor-pointer active:scale-98 transition-all min-h-[220px] leading-none">
+                     <div className="absolute inset-0 bg-white opacity-0 group-hover:opacity-5 transition-opacity duration-500 leading-none"></div>
+                     <div className="flex items-center gap-8 relative z-10 leading-none">
+                        <div className="bg-white/10 p-7 rounded-[32px] text-indigo-200 border border-white/5 shadow-inner leading-none"><ShieldCheck size={56}/></div>
+                        <div className="leading-none">
+                           <h4 className="font-black text-2xl italic tracking-tighter leading-none mb-3 text-white uppercase">Owner Profile</h4>
+                           <p className="text-lg font-bold text-indigo-300 uppercase tracking-widest italic leading-none mb-4 opacity-80">{merchant?.ownerName || "DEMO MERCHANT"}</p>
+                           <div className="text-[10px] font-black text-emerald-400 uppercase tracking-[0.2em] flex items-center gap-2 italic leading-none"><Globe size={14}/> PAN Verified Secure Portal</div>
+                        </div>
+                        <div className="ml-auto bg-emerald-400 p-3 rounded-[20px] text-[#1A237E] shadow-2xl rotate-12 group-hover:rotate-0 transition-transform duration-500 leading-none"><CheckCircle2 size={28} strokeWidth={4}/></div>
+                     </div>
+                  </section>
+
+                  <section className="bg-white rounded-[48px] p-10 shadow-xl border border-white relative overflow-hidden flex-1 group hover:shadow-emerald-50 transition-all leading-none">
+                     <div className="flex justify-between items-center mb-10 leading-none text-slate-800">
+                        <h3 className="font-black text-2xl italic uppercase tracking-tighter leading-none">Reputation Rank</h3>
+                        <span className="bg-emerald-50 text-emerald-600 font-black text-xs px-6 py-3 rounded-full border border-emerald-100 uppercase tracking-widest leading-none shadow-sm">{merchant?.trustScore || 0}% Score</span>
+                     </div>
+                     <div className="h-5 w-full bg-slate-100 rounded-full overflow-hidden shadow-inner p-1.5 mb-10 leading-none">
+                        <div className="h-full bg-emerald-500 rounded-full transition-all duration-1500 shadow-[0_0_20px_rgba(16,185,129,0.5)]" style={{ width: `${merchant?.trustScore || 0}%` }}></div>
+                     </div>
+                     <div className="grid grid-cols-2 gap-8 leading-none">
+                        <div className="bg-slate-50/50 p-8 rounded-[40px] border border-slate-100 shadow-sm text-center group-hover:bg-white transition-all leading-none text-slate-800">
+                           <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-3 italic leading-none opacity-80 uppercase leading-none">Portal Transactions</p>
+                           <p className="text-5xl font-black tracking-tighter italic leading-none">152+</p>
+                        </div>
+                        <div className="bg-slate-50/50 p-8 rounded-[40px] border border-slate-100 shadow-sm text-center group-hover:bg-white transition-all leading-none text-emerald-600">
+                           <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest mb-3 italic leading-none opacity-80 uppercase leading-none">Status</p>
+                           <p className="text-4xl font-black tracking-tighter italic leading-none uppercase leading-none">Gold</p>
+                        </div>
+                     </div>
+                  </section>
+                  
+               </div>
+
+            </div>
+         </main>
+
+         {/* Mobile Navigation (Floating Bar) */}
+         <nav className="md:hidden fixed bottom-6 left-6 right-6 bg-white/95 backdrop-blur-2xl border border-white/50 px-8 py-6 flex justify-between items-center z-50 rounded-[40px] shadow-[0_20px_60px_rgba(0,0,0,0.2)]">
+            <NavIcon icon={<LayoutDashboard size={26}/>} label="Home" active color={primary} />
+            <NavIcon icon={<ReceiptText size={26}/>} label="GST" color="#94a3b8" />
+            <div onClick={() => setShowQrModal(true)} style={{ backgroundColor: primary }} className="p-5 rounded-[24px] text-white shadow-2xl shadow-indigo-200 -mt-20 active:scale-90 transition-all border-[6px] border-[#F8FAFC] flex items-center justify-center"><Plus size={32} strokeWidth={3} /></div>
+            <NavIcon icon={<Wallet size={26}/>} label="Wallet" color="#94a3b8" />
+            <NavIcon icon={<UserIcon size={26}/>} label="Account" color="#94a3b8" />
+         </nav>
+      </div>
+
+      {/* Global Modals (Fixed Logic) */}
+      {showSubWall && <ModalContainer onClose={() => setShowSubWall(false)} title="Upgrade to Pro" icon={<Crown size={32}/>}><div className="text-center px-6 leading-none"><p className="text-slate-500 mb-10 text-lg leading-relaxed font-medium italic leading-none">Download GSTR reports, full ledger history, aur unlimited cloud business nodes ka access unlock karein.</p><div className="bg-slate-50 p-10 rounded-[48px] mb-10 border-2 border-slate-100 flex justify-between items-center group cursor-pointer hover:border-amber-400 transition-all shadow-inner leading-none"><div className="text-left leading-none"><p className="font-black text-2xl text-slate-800 leading-none">Yearly Business Plan</p><p className="text-[12px] text-slate-400 font-bold uppercase mt-3 italic tracking-widest leading-none">Sasta & Best Value</p></div><div className="text-right leading-none"><p className="font-black text-3xl text-[#1A237E] leading-none">₹3,999/yr</p><p className="text-[10px] font-bold text-slate-300 uppercase line-through mt-2 leading-none text-slate-300">₹5,999</p></div></div><button className="w-full bg-[#1A237E] text-white py-6 rounded-[32px] font-black text-2xl shadow-2xl active:scale-95 uppercase tracking-tighter italic shadow-indigo-100 leading-none">Activate Business Pro Now</button></div></ModalContainer>}
+      
+      {showCashModal && <ModalContainer onClose={() => setShowCashModal(false)} title="Record Cash Entry" icon={<Banknote size={32}/>}><div className="space-y-10 py-4 leading-none"><div className="space-y-3 leading-none"><label className="text-[12px] font-black text-slate-400 uppercase tracking-widest ml-1 italic opacity-60 leading-none">Order Amount (₹)</label><input autoFocus type="number" value={amount} onChange={(e) => setAmount(e.target.value)} className="w-full bg-slate-50 border-2 border-slate-100 py-10 px-12 rounded-[48px] text-7xl font-black tracking-tighter outline-none focus:border-[#1A237E] transition-all shadow-inner leading-none" placeholder="0.00"/></div><button onClick={() => recordTransaction(amount, 'CASH')} disabled={!amount} className="w-full bg-[#1A237E] text-white py-6 rounded-[32px] font-black text-2xl active:scale-95 shadow-2xl uppercase tracking-tighter italic leading-none">SUBMIT BILLING</button></div></ModalContainer>}
+      
+      {showQrModal && <ModalContainer onClose={() => {setShowQrModal(false); setActiveQr(null);}} title="Create Bill QR" icon={<QrCode size={32}/>}>{!activeQr ? (<div className="pt-4 space-y-10 leading-none"><div className="space-y-3 leading-none"><label className="text-[12px] font-black text-slate-400 uppercase tracking-widest ml-1 italic opacity-60 leading-none">Scan Amount (₹)</label><input autoFocus type="number" value={amount} onChange={(e) => setAmount(e.target.value)} className="w-full bg-slate-50 border-2 border-slate-100 py-10 px-12 rounded-[48px] text-7xl font-black tracking-tighter outline-none focus:border-emerald-500 transition-all shadow-inner leading-none" placeholder="0.00"/></div><button onClick={() => recordTransaction(amount, 'TOKEN')} disabled={!amount} className="w-full bg-emerald-600 text-white py-6 rounded-[32px] font-black text-2xl shadow-2xl active:scale-95 uppercase tracking-tighter italic leading-none">GENERATE DYNAMIC QR</button></div>) : (<div className="text-center pt-2 leading-none"><div className="flex items-center justify-center gap-3 text-emerald-600 font-black mb-10 leading-none"><Timer size={28} className="animate-pulse" /> <span className="text-3xl tracking-tighter font-serif leading-none">{Math.floor(timeLeft / 60)}:{(timeLeft % 60).toString().padStart(2, '0')}</span></div><div className="bg-slate-50 p-12 rounded-[64px] border-2 border-slate-100 flex flex-col items-center shadow-inner mb-10 leading-none"><div className="p-8 bg-white rounded-[40px] shadow-lg border border-slate-100 scale-125 mb-4 leading-none"><svg width="180" height="180" viewBox="0 0 100 100">{[...Array(49)].map((_, i) => (<rect key={i} x={(i % 7) * 14 + 1} y={Math.floor(i / 7) * 14 + 1} width="12" height="12" fill={Math.random() > 0.4 ? '#1A237E' : '#E2E8F0'} rx="4"/>))}</svg></div><p className="mt-16 text-6xl font-black text-slate-800 tracking-tighter leading-none">{formatINR(activeQr.amount)}</p><p className="text-[14px] text-slate-400 font-bold uppercase mt-4 tracking-[0.3em] italic leading-none opacity-60 uppercase">Verified Cloud Invoice</p></div><p className="text-[11px] text-slate-400 font-bold uppercase italic leading-relaxed px-12 opacity-80 leading-none">System syncing hardware ID & location nodes with cloud signature...</p></div>)}</ModalContainer>}
+    </div>
+  );
+};
+
+// --- Desktop Sidebar Components ---
+const SidebarItem = ({ icon, label, active = false }) => (
+   <div className={`flex items-center gap-5 px-8 py-5 rounded-[28px] cursor-pointer transition-all duration-300 leading-none ${active ? 'bg-indigo-50 text-[#1A237E] font-black shadow-sm translate-x-2' : 'text-slate-400 hover:bg-slate-50 font-bold hover:text-slate-600 hover:translate-x-1'}`}>
+      {icon}<span className="text-base tracking-tight leading-none">{label}</span>
+   </div>
+);
+
+const ModalContainer = ({ children, onClose, title, icon }) => (
+   <div className="fixed inset-0 z-[100] bg-black/85 backdrop-blur-xl flex items-center justify-center p-6 animate-in fade-in duration-500 leading-none">
+      <div className="bg-white w-full max-w-2xl rounded-[72px] p-16 relative shadow-2xl border border-slate-100 animate-in zoom-in-95 duration-400 overflow-hidden leading-none">
+         <div className="flex justify-between items-center mb-12 relative z-10 px-2 leading-none">
+            <div className="flex items-center gap-5 leading-none">
+               <div className="p-4 bg-indigo-50 text-[#1A237E] rounded-[28px] shadow-sm leading-none">{icon}</div>
+               <h2 className="text-4xl font-black italic tracking-tighter text-slate-800 uppercase leading-none">{title}</h2>
+            </div>
+            <button onClick={onClose} className="p-4 bg-slate-100 rounded-[24px] hover:bg-slate-200 transition-all active:scale-90 shadow-sm leading-none"><X size={28}/></button>
+         </div>
+         <div className="relative z-10 leading-none">{children}</div>
+         <div className="absolute -bottom-24 -left-24 w-64 h-64 bg-slate-50 rounded-full opacity-50 blur-3xl leading-none"></div>
+      </div>
+   </div>
+);
+
+const NavIcon = ({ icon, label, active = false, color }) => (
+  <div className="flex flex-col items-center gap-2 cursor-pointer group px-4 leading-none">
+    <div className="transition-all duration-300 group-hover:scale-125 leading-none" style={{ color: active ? color : '#94a3b8' }}>{icon}</div>
+    <span className="text-[11px] font-black tracking-tighter uppercase opacity-70 leading-none mt-1" style={{ color: active ? color : '#94a3b8' }}>{label}</span>
+  </div>
+);
+
+export default App;
